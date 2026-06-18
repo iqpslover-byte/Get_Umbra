@@ -20,11 +20,19 @@ JSON構造:
 
 外部依存: なし (stdlib + struct のみ)
 """
-import urllib.request, urllib.parse
+import urllib.parse
 import xml.etree.ElementTree as ET
 import json, re, struct, math
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+
+import urllib3, os as _os
+SESSION = requests.Session()
+SESSION.headers.update({'User-Agent': 'UmbraFetcher/1.0'})
+if _os.environ.get('UMBRA_NO_VERIFY', ''):
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    SESSION.verify = False
 
 BASE = "https://umbra-open-data-catalog.s3.us-west-2.amazonaws.com/"
 NS   = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
@@ -65,11 +73,9 @@ def utm_to_latlon(easting, northing, zone, south=False):
 
 # ── TIFFヘッダー読み込み ──────────────────────────────────────────────────────
 def range_get(url, start, length):
-    req = urllib.request.Request(
-        url, headers={'Range': f'bytes={start}-{start+length-1}',
-                      'User-Agent': 'UmbraFetcher/1.0'})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read()
+    r = SESSION.get(url, headers={'Range': f'bytes={start}-{start+length-1}'}, timeout=15)
+    r.raise_for_status()
+    return r.content
 
 def read_tiff_corners(url):
     """GEC GeoTIFFの先頭を読んでフットプリント4隅[TL,TR,BR,BL]を返す。失敗時はNone。"""
@@ -182,10 +188,7 @@ def s3_list_prefixes(prefix):
                + '&delimiter=/'
                + '&max-keys=1000'
                + (('&continuation-token=' + urllib.parse.quote(token, safe='')) if token else ''))
-        with urllib.request.urlopen(
-                urllib.request.Request(url, headers={'User-Agent':'UmbraFetcher/1.0'}),
-                timeout=30) as r:
-            root = ET.fromstring(r.read())
+        root = ET.fromstring(SESSION.get(url, timeout=15).content)
         result += [p.text for p in root.findall('.//s3:CommonPrefixes/s3:Prefix', NS)]
         trunc = root.find('s3:IsTruncated', NS)
         if trunc is not None and trunc.text == 'true':
@@ -202,10 +205,7 @@ def s3_list_gec_keys(prefix):
                + '&prefix=' + urllib.parse.quote(prefix, safe='/')
                + '&max-keys=1000'
                + (('&continuation-token=' + urllib.parse.quote(token, safe='')) if token else ''))
-        with urllib.request.urlopen(
-                urllib.request.Request(url, headers={'User-Agent':'UmbraFetcher/1.0'}),
-                timeout=30) as r:
-            root = ET.fromstring(r.read())
+        root = ET.fromstring(SESSION.get(url, timeout=15).content)
         result += [k.text for k in root.findall('.//s3:Key', NS)
                    if k.text and k.text.endswith('_GEC.tif')]
         trunc = root.find('s3:IsTruncated', NS)
@@ -267,16 +267,14 @@ def main():
     tasks, done = [], 0
     workers = int(os.environ.get('UMBRA_WORKERS', '8'))
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        def submit(tp):
-            name = tp.replace('sar-data/tasks/', '').rstrip('/')
-            # 前回の最新シーンが同じならcornersを再利用
-            return ex.submit(fetch_task, tp, None)  # キャッシュは後で適用
-
-        futs = {ex.submit(fetch_task, tp): tp for tp in task_prefixes}
-        for fut in as_completed(futs):
+    from concurrent.futures import TimeoutError as FutTimeoutError
+    ex = ThreadPoolExecutor(max_workers=workers)
+    futs = {ex.submit(fetch_task, tp): tp for tp in task_prefixes}
+    timed_out = False
+    try:
+        for fut in as_completed(futs, timeout=120):
             try:
-                result = fut.result()
+                result = fut.result(timeout=5)
             except Exception as e:
                 name = futs[fut].replace('sar-data/tasks/', '').rstrip('/')
                 print(f'  ERR {name}: {e}', file=sys.stderr)
@@ -286,6 +284,10 @@ def main():
             c = 'ok' if result['latest_corners'] else 'NG'
             print(f'  [{done:2d}/{len(task_prefixes)}] {result["name"]} '
                   f'({result["count"]}件, corners:{c})')
+    except FutTimeoutError:
+        timed_out = True
+        print(f'\n警告: タイムアウト。{done}/{len(task_prefixes)}タスクで打ち切り', file=sys.stderr)
+    ex.shutdown(wait=False, cancel_futures=True)
 
     tasks.sort(key=lambda t: t['name'])
     total = sum(t['count'] for t in tasks)
@@ -297,6 +299,8 @@ def main():
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
     print(f'\n完了: {total}シーン / {len(tasks)}タスク → {out_path}')
+    if timed_out:
+        os._exit(0)
 
 if __name__ == '__main__':
     main()
