@@ -1,0 +1,33 @@
+name: Fetch Umbra Scenes
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 毎日 03:00 UTC (日本時間 12:00)
+  workflow_dispatch:       # 手動実行も可
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run fetcher
+        env:
+          UMBRA_WORKERS: '12'
+        run: python fetch_umbra.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add umbra_scenes.json
+          git diff --cached --quiet || git commit -m "auto: update umbra_scenes.json [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+          git push
