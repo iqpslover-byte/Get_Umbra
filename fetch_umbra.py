@@ -193,7 +193,10 @@ def s3_list_prefixes(prefix):
         trunc = root.find('s3:IsTruncated', NS)
         if trunc is not None and trunc.text == 'true':
             t = root.find('s3:NextContinuationToken', NS)
-            token = t.text if t else None
+            new_token = t.text if (t is not None and t.text) else None
+            if not new_token or new_token == token:
+                break  # トークンが取れない/進まない＝無限ループ防止
+            token = new_token
         else:
             break
     return result
@@ -211,7 +214,10 @@ def s3_list_gec_keys(prefix):
         trunc = root.find('s3:IsTruncated', NS)
         if trunc is not None and trunc.text == 'true':
             t = root.find('s3:NextContinuationToken', NS)
-            token = t.text if t else None
+            new_token = t.text if (t is not None and t.text) else None
+            if not new_token or new_token == token:
+                break  # トークンが取れない/進まない＝無限ループ防止
+            token = new_token
         else:
             break
     return result
@@ -266,12 +272,9 @@ def main():
 
     tasks, done = [], 0
     workers   = int(os.environ.get('UMBRA_WORKERS', '24'))
-    # 全体タイムアウトは既定で無制限(None)。各HTTPに timeout=15 が付いており
-    # 個々のリクエストは必ず有限時間で返る＝全体がハングすることはない。
-    # 旧600秒打ち切りでは、cornersが未キャッシュの新規タスク(要Range GET)が
-    # 処理し切れず12タスク脱落していた。タイムアウト撤廃で全79タスクを取得する。
-    _to = os.environ.get('UMBRA_TIMEOUT', '').strip()
-    timeout_s = int(_to) if _to else None
+    # 全体タイムアウト(保険)。既定1800秒。真因は列挙の無限ループ(下のガードで解消)
+    # だが、想定外のハングに備えて上限は必ず設ける。
+    timeout_s = int(os.environ.get('UMBRA_TIMEOUT', '1800'))
 
     from concurrent.futures import TimeoutError as FutTimeoutError
     ex = ThreadPoolExecutor(max_workers=workers)
