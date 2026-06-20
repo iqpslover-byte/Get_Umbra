@@ -265,14 +265,17 @@ def main():
     print(f'{len(task_prefixes)}タスク発見\n')
 
     tasks, done = [], 0
-    workers = int(os.environ.get('UMBRA_WORKERS', '8'))
+    workers   = int(os.environ.get('UMBRA_WORKERS', '12'))
+    # 全体タイムアウト。各リクエストには timeout=15 が付いておりハングしないので
+    # 大きめ(既定600秒)。シーン数の多いタスク(Kourou等)も取りこぼさない。
+    timeout_s = int(os.environ.get('UMBRA_TIMEOUT', '600'))
 
     from concurrent.futures import TimeoutError as FutTimeoutError
     ex = ThreadPoolExecutor(max_workers=workers)
     futs = {ex.submit(fetch_task, tp): tp for tp in task_prefixes}
     timed_out = False
     try:
-        for fut in as_completed(futs, timeout=120):
+        for fut in as_completed(futs, timeout=timeout_s):
             try:
                 result = fut.result(timeout=5)
             except Exception as e:
