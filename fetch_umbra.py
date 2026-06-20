@@ -265,10 +265,13 @@ def main():
     print(f'{len(task_prefixes)}タスク発見\n')
 
     tasks, done = [], 0
-    workers   = int(os.environ.get('UMBRA_WORKERS', '12'))
-    # 全体タイムアウト。各リクエストには timeout=15 が付いておりハングしないので
-    # 大きめ(既定600秒)。シーン数の多いタスク(Kourou等)も取りこぼさない。
-    timeout_s = int(os.environ.get('UMBRA_TIMEOUT', '600'))
+    workers   = int(os.environ.get('UMBRA_WORKERS', '24'))
+    # 全体タイムアウトは既定で無制限(None)。各HTTPに timeout=15 が付いており
+    # 個々のリクエストは必ず有限時間で返る＝全体がハングすることはない。
+    # 旧600秒打ち切りでは、cornersが未キャッシュの新規タスク(要Range GET)が
+    # 処理し切れず12タスク脱落していた。タイムアウト撤廃で全79タスクを取得する。
+    _to = os.environ.get('UMBRA_TIMEOUT', '').strip()
+    timeout_s = int(_to) if _to else None
 
     from concurrent.futures import TimeoutError as FutTimeoutError
     ex = ThreadPoolExecutor(max_workers=workers)
